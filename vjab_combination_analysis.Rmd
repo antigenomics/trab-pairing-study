@@ -1,0 +1,367 @@
+---
+title: "Novel TCR subsets"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(data.table)
+library(reshape2)
+library(ggplot2)
+library(igraph)
+library(RColorBrewer)
+library(scales)
+library(ggseqlogo)
+```
+
+Load data
+
+```{r}
+pairs <- fread("data_dump/tcr_ab_pairs.vj.txt")
+```
+
+Process data, collapse to trios, compute enrichment fold & P-values
+
+```{r}
+compute_trio <- function(segm) {
+  segm.trio <- pairs
+  segm.trio[, segm] <- 'X'
+  trio.type <- colnames(pairs %>% select(-segm, -count)) %>% paste0(collapse = "-")
+  trio.type <- gsub("v.alpha", "Va", trio.type, fixed = T)
+  trio.type <- gsub("j.alpha", "Ja", trio.type, fixed = T)
+  trio.type <- gsub("v.beta", "Vb", trio.type, fixed = T)
+  trio.type <- gsub("j.beta", "Jb", trio.type, fixed = T)
+  segm.trio %>%
+    group_by(v.alpha, j.alpha, v.beta, j.beta) %>%
+    summarise(count = sum(count)) %>%
+    group_by(v.alpha, j.alpha) %>%
+    mutate(count.a = sum(count)) %>%
+    ungroup %>%
+    group_by(v.beta, j.beta) %>%
+    mutate(count.b = sum(count)) %>%
+    ungroup %>%
+    mutate(total = sum(count),
+           count.exp = count.a * as.numeric(count.b) / total,
+           p.value = phyper(count, count.a, total - count.a, count.b)) %>%
+    mutate(p.value = pmin(1.0 - p.value, p.value), trio.type = trio.type)
+}
+
+colnames(pairs %>% select(-count)) %>%
+  lapply(function(x) compute_trio(x)) %>%
+  rbindlist() -> trios
+
+trios$p.adj <- p.adjust(trios$p.value)
+```
+
+Get 'canonical' VaJaVb for MAIT and iNKT, ref:https://www.pnas.org/content/116/18/8995
+
+```{r}
+mait_trios <- trios %>%
+  filter(v.alpha == "TRAV1-2" &
+           j.alpha %in% c("TRAJ12", "TRAJ20", "TRAJ33") &
+           v.beta == "TRBV6-4") %>%
+  mutate(subset = "MAIT")
+
+mait_trios
+
+inkt_trios <- trios %>%
+  filter(v.alpha == "TRAV10" &
+           j.alpha == "TRAJ18" &
+           v.beta == "TRBV25-1") %>%
+  mutate(subset = "iNKT")
+
+inkt_trios
+```
+
+```{r fig.height=6, fig.width=7}
+p1 <- trios %>%
+  filter(count >= 10) %>%
+  ggplot(aes(x = log2(count/count.exp), y = count, 
+             color = log10(p.adj + 1e-10)
+         )) +
+  geom_bin2d(aes(fill = log2(..density..)), bins = 20) +
+  geom_point(data = trios %>%
+  filter(count >= 10, p.adj < 0.05) ) +
+  geom_text_repel(data = rbind(mait_trios, inkt_trios), 
+                  aes(label = subset), color = "red", min.segment.length = 0,
+                  nudge_x = -0.8, nudge_y = 20) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_x_continuous("log2 observed / expected count ratio"#, limits = c(-4, 4)
+                     ) +
+  ylab("Trio count") +
+  scale_fill_distiller(palette = "Greys", direction = 1) +
+  scale_color_distiller("log10 P-value\n(adjusted)",
+                        palette = "RdGy", direction = 1, limits = c(-10, -1), 
+                        na.value = "grey20") +
+  facet_wrap(~trio.type, scales = "free_y") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+p1
+pdf("comb_p1.pdf", height = 6, width = 6)
+p1
+dev.off()
+```
+
+Select a large list of trios, also print most interesting combinations (mostly MAIT/iNKT)
+
+```{r}
+trios.sel <- trios %>%
+  filter(count >= 10, count > count.exp, p.adj < 0.05)
+
+trios %>% 
+  filter(count >= 10, log2(count/count.exp) > 4) %>%
+  arrange(p.adj)
+```
+
+Build graph for enriched combinations
+
+```{r}
+build_sign <- function(x) {
+  paste0(x[!(x == "X")], collapse = " ")
+}
+
+count_matches <- function(x, y) {
+  sum(x == y | x == "X" | y == "X")
+}
+
+trios.sel.1 <- trios.sel %>%
+  rowwise() %>%
+  mutate(signature = c(v.alpha, j.alpha, v.beta, j.beta) %>% build_sign) %>%
+  select(signature, v.alpha, j.alpha, v.beta, j.beta)
+
+trios.sel.edges <- trios.sel.1 %>%
+  merge(trios.sel.1, by = c()) %>%
+  rowwise %>%
+  mutate(matches = count_matches(c(v.alpha.x, j.alpha.x, v.beta.x, j.beta.x),
+                                 c(v.alpha.y, j.alpha.y, v.beta.y, j.beta.y))) %>%
+  #filter(signature.x != signature.y) %>%
+  select(signature.x, signature.y, matches)
+```
+
+```{r fig.width=8, fig.height=8}
+trios.sel.edges %>%
+  filter(matches == 4) %>%
+  select(-matches) %>%
+  graph_from_data_frame() %>%
+  simplify -> trios.graph
+
+layout_graph <- function(gg) {
+  set.seed(42)
+  
+  cc <- clusters(gg)
+    
+  coords <- gg %>%
+      layout_with_graphopt(niter = 3000, charge = 0.01)
+  
+  data.frame(signature = names(V(gg)),
+             x = coords[,1],
+             y = coords[,2],
+             stringsAsFactors = F) %>%
+    merge(
+      data.frame(signature = names(cc$membership),
+                 cid = cc$membership))
+}
+
+most_freq <- function(x) {
+  names(sort(table(x),decreasing=T))[1]
+}
+
+#most_freq(c("A","A", "B"))
+
+trios.components <- trios.graph %>%
+  layout_graph %>%
+  merge(trios.sel.1) %>%
+  group_by(cid) %>%
+  mutate(csize = n(), csign = c(most_freq(v.alpha),
+                                     most_freq(j.alpha),
+                                     most_freq(v.beta),
+                                     most_freq(j.beta)) %>% build_sign) %>%
+  mutate(csign = gsub("TRAV", "Va", csign)) %>%
+  mutate(csign = gsub("TRAJ", "Ja", csign)) %>%
+  mutate(csign = gsub("TRBV", "Vb", csign)) %>%
+  mutate(csign = gsub("TRBJ", "Jb", csign)) %>%
+  ungroup %>%
+  mutate(cid2 = ifelse(csize == 1, "Singleton", csign)) %>%
+  merge(rbind(mait_trios, inkt_trios) %>% select(v.alpha, j.alpha, v.beta, j.beta, subset), all.x = T) %>%
+  merge(trios.sel)
+
+p2 <- trios.components %>%
+  ggplot(aes(x = x, y = y, color = cid2 %>% as.factor)) +
+  geom_point(aes(size = sqrt(count)), alpha = 0.85) +
+  geom_text_repel(data = trios.components %>% filter(!is.na(subset)), 
+                  aes(label = subset), color = "black", min.segment.length = 0) +
+  scale_color_manual("Cluster ID",
+                     values = c("black", 
+                                colorRampPalette(brewer.pal(9, "Set1"))(13))) +
+  scale_size_continuous(guide = F) +
+  xlab("") + ylab("") +
+  theme_bw() +
+  theme(aspect = 1,
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_blank(), axis.ticks = element_blank())
+
+p2
+pdf("comb_p2.pdf", height = 6, width = 6)
+p2
+dev.off()
+
+trios.components %>%
+  fwrite("enriched_trios.txt", sep = "\t")
+```
+
+Exploring the TRAV13-1, TRAJ56, TRBV10-3 that has three members (and a high enrichment comparable to MAIT):
+- TRAV13-1 TRAJ56 TRBV10-3
+- TRAV13-2 TRAJ56 TRBV10-3
+- TRAJ56 TRBV10-3 TRBJ2-7
+
+```{r}
+pairseq_cdrs <- fread("zcat data_dump/tcr_ab_pairs.txt.gz")
+
+pairseq_cdrs %>%
+  filter(grepl("TRAV13", allVGenes, fixed = T),
+         grepl("TRAJ56", allJGenes, fixed = T)
+         ) %>% select(sample, clone) -> ids_a
+
+pairseq_cdrs %>%
+  filter(grepl("TRBV10-3", allVGenes, fixed = T)
+         ) %>% select(sample, clone) -> ids_b
+
+ids_ab <- merge(ids_a, ids_b)
+
+pairseq_cdrs %>%
+  merge(ids_ab) -> xclones_ab
+
+pairseq_cdrs %>%
+  merge(ids_a) %>% filter(chain == "A") -> xclones_a
+pairseq_cdrs %>%
+  merge(ids_b) %>% filter(chain == "B") -> xclones_b
+
+xclones_ab %>% fwrite("Va13Ja56Vb10-3.txt", sep = "\t")
+
+#spectratype
+
+list(
+data.frame(type = "TRAV13/TRAJ56/TRBV10-3",
+           chain = "A",
+           cdr3.len = xclones_ab %>% filter(chain == "A") %>% .$aaSeqCDR3 %>% nchar),
+data.frame(type = "TRAV13/TRAJ56",
+           chain = "A",
+           cdr3.len = xclones_a %>% filter(chain == "A") %>% .$aaSeqCDR3 %>% nchar),
+data.frame(type = "TRAV13/TRAJ56/TRBV10-3",
+           chain = "B",
+           cdr3.len = xclones_ab %>% filter(chain == "B") %>% .$aaSeqCDR3 %>% nchar),
+data.frame(type = "TRBV10-3",
+           chain = "B",
+           cdr3.len = xclones_b %>% filter(chain == "B") %>% .$aaSeqCDR3 %>% nchar)
+) %>% 
+  rbindlist %>%
+  mutate(chain.1 = chain, 
+         chain = ifelse(chain == "A", "Va13 Ja56 Vb10-3 vs Va13 Ja56 (alpha)", 
+       "Va13 Ja56 Vb10-3 vs Vb10-3 (beta)")) -> xspectra
+
+p3a <- ggplot(xspectra %>% filter(type == "TRAV13/TRAJ56/TRBV10-3"),
+       aes(x = cdr3.len)) +
+  geom_histogram(aes(y=..density..), binwidth = 1, fill = "orange") +
+  geom_freqpoly(data = xspectra %>% filter(type != "TRAV13/TRAJ56/TRBV10-3"),
+                aes(y=..density..), binwidth = 1, size = 1) +
+  facet_wrap(~chain) + 
+  scale_x_continuous("CDR3 length (aa)", breaks = seq(0, 30, by = 2)) +
+  ylab("Fraction of CDR3 sequences") +
+  theme_bw() +
+  theme(aspect = 1, legend.position = "bottom")
+
+ks.test(
+xspectra %>% filter(type == "TRAV13/TRAJ56/TRBV10-3", chain.1 == "A") %>% .$cdr3.len,
+xspectra %>% filter(type == "TRAV13/TRAJ56", chain.1 == "A") %>% .$cdr3.len)
+
+ks.test(
+xspectra %>% filter(type == "TRAV13/TRAJ56/TRBV10-3", chain.1 == "B") %>% .$cdr3.len,
+xspectra %>% filter(type == "TRBV10-3", chain.1 == "B") %>% .$cdr3.len)
+
+p3a
+pdf("comb_p3a.pdf", height = 5, width = 6)
+p3a
+dev.off()
+
+p3b <- xclones_ab %>%
+  filter(chain == "A", nchar(aaSeqCDR3) == 14) %>%
+  .$aaSeqCDR3 %>%
+  ggseqlogo
+
+p3b
+pdf("comb_p3b.pdf", height = 4, width = 4)
+p3b
+dev.off()
+
+p3c <- xclones_ab %>%
+  filter(chain == "B", nchar(aaSeqCDR3) == 12) %>%
+  .$aaSeqCDR3 %>%
+  ggseqlogo
+
+p3c
+pdf("comb_p3c.pdf", height = 4, width = 4)
+p3c
+dev.off()
+```
+
+```{r}
+clones10x <- fread("data_dump/10x_pbmc2_clones.txt") %>%
+  filter(chain %in% c("TRA", "TRB")) %>%
+  select(barcode, raw_clonotype_id, chain, v_gene, j_gene) %>%
+  filter(raw_clonotype_id != "None", v_gene != "None" & j_gene != "None") %>%
+  unique
+
+clones10x <- clones10x %>%
+  filter(chain == "TRA") %>%
+  mutate(clonotype.id = raw_clonotype_id, v.alpha = v_gene, j.alpha = j_gene) %>%
+  select(barcode, clonotype.id, v.alpha, j.alpha) %>%
+  unique %>%
+  merge(clones10x %>%
+          filter(chain == "TRB") %>%
+          mutate(clonotype.id = raw_clonotype_id, v.beta = v_gene, j.beta = j_gene) %>%
+          select(barcode, clonotype.id, v.beta, j.beta) %>%
+          unique, by = c("clonotype.id", "barcode"))
+
+filter_clones_1 <- function(va, ja, vb, jb) {
+  clones10x %>% 
+       filter(v.alpha %in% va &
+              j.alpha %in% ja &
+              v.beta %in% vb &
+              j.beta %in% jb)
+}
+
+filter_clones_2 <- function(va, ja, vb, jb, cid) {
+  clones10x %>% 
+       filter((va == "X" | v.alpha == va) &
+              (ja == "X" | j.alpha == ja) &
+              (vb == "X" | v.beta == vb) &
+              (jb == "X" | j.beta == jb)) %>%
+    mutate(cid = cid)
+}
+
+clones10x.ann_1 <- trios.components %>%
+  select(cid, v.alpha, j.alpha, v.beta, j.beta) %>%
+  group_by(cid) %>%
+  do(filter_clones_1(.$v.alpha, .$j.alpha, .$v.beta, .$j.beta)) %>%
+  merge(trios.components %>% select(cid, cid2, csign) %>% unique) %>%
+  mutate(annotation_type = "any_combination")
+
+clones10x.ann_2 <- trios.components %>%
+  select(cid, v.alpha, j.alpha, v.beta, j.beta) %>%
+  rowwise() %>%
+  do(filter_clones_2(.$v.alpha, .$j.alpha, .$v.beta, .$j.beta, .$cid)) %>%
+  merge(trios.components %>% select(cid, cid2, csign) %>% unique) %>%
+  mutate(annotation_type = "exact")
+
+rbind(clones10x.ann_1, clones10x.ann_2) %>%
+  fwrite("10x_annotations.txt", sep = "\t")
+```
+
+TRAV26-1/TRBV20-1 -- http://www.jimmunol.org/content/jimmunol/199/7/2279.full.pdf
+
+```{r}
+#
+```

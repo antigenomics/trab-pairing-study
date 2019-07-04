@@ -236,15 +236,15 @@ p1 <- trab.contacts.s %>%
   geom_hline(yintercept = CDR2_END, linetype = "dashed", color = "grey") +
   geom_hline(yintercept = CDR3_START,linetype = "dashed", color = "grey") +
   geom_hline(yintercept = CDR3_END,linetype = "dashed", color = "grey") +
-  geom_tile(aes(fill = freq),#cut(freq, breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1))), 
-            color = NA) +
+  geom_point(aes(color = freq)#cut(freq, breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1))), 
+            ) +
   geom_vline(xintercept = (CDR3_START + CDR3_END) / 2, linetype = "dotted", color = "grey") +
   geom_hline(yintercept = (CDR3_START + CDR3_END) / 2, linetype = "dotted", color = "grey") +
   annotate("text", x = (CDR1_START + CDR1_END) / 2, y = 0, label = "CDR1", color = "grey30") +
   annotate("text", x = (CDR2_START + CDR2_END) / 2, y = 0, label = "CDR2", color = "grey30") +
   annotate("text", x = (CDR3_START + CDR3_END) / 2, y = 0, label = "CDR3", color = "grey30") +
   xlab("TRA residue index") + ylab("TRB residue index") +
-  scale_fill_distiller("Contact frequency", limits = c(0,1),
+  scale_color_distiller("Contact frequency", limits = c(0,1),
                        palette = "Blues", direction = 1) +
   #scale_fill_brewer("Contact frequency", palette = "Spectral", direction = -1) +
   theme_bw() +

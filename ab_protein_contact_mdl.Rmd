@@ -16,6 +16,7 @@ library(parallel)
 library(network)
 library(bnlearn)
 library(ggrepel)
+library(broom)
 library(scales)
 library(latex2exp)
 library(Biostrings)
@@ -133,6 +134,10 @@ resmarkup.i <- resmarkup %>%
   ungroup %>%
   select(-part.after.fr3) %>%
   filter(!is.na(imgt.idx))
+
+resmarkup.i %>% str
+
+resmarkup.i %>% fwrite("pdb_imgt_residues.txt", sep = "\t")
 ```
 
 ### Loading contact data and merging in the numbering
@@ -146,7 +151,7 @@ trab.contacts.real <- fread("data_dump/atomdist.txt") %>%
   mutate(real = T) %>%
   unique
 
-trab.contacts <- fread("data_dump/cadist.txt") %>%
+trab.contacts <- fread("zcat data_dump/cadist.txt.gz") %>%
   filter(dist.ca <= CONTACT_DIST_CA) %>%
   select(pdb.id, chain.id.from, chain.id.to, residue.index.from, residue.index.to) %>%
   merge(trab.contacts.real, all.x = T) %>%
@@ -1090,12 +1095,16 @@ vdjdb.vj.all.wide.p <- vdjdb.vj.all.wide
 vdjdb.vj.all.wide.p$prob.ab <- logLik(fit.ab.inter, vdjdb.vj.all.wide %>% 
                                         select(-antigen.epitope.a, -antigen.epitope.b, - type), by.sample = T)
 
+vdjdb.vj.all.wide.p %>%
+  group_by(antigen.epitope.a) %>%
+  do(ks.test(.$prob.ab[which(.$type == "Real")], .$prob.ab[which(.$type == "Shuffled (b)")]) %>% tidy)
+
 p15 <- vdjdb.vj.all.wide.p %>%
   ggplot(aes(x = prob.ab,
              color = type,
              linetype = type)) +
   stat_ecdf() +
-  facet_wrap(~antigen.epitope.a) +
+  facet_wrap(~antigen.epitope.a, nrow = 2) +
   scale_x_continuous(TeX("$\\textbf{L}_{\\alpha\\beta}(i)$")) + ylab("CDF") +
   scale_color_manual("", values = c("red", "black", "orange")) +
   scale_linetype_manual("", values = c("solid", "dashed", "solid")) +
@@ -1268,6 +1277,8 @@ p16
 pdf("fig6.pdf", width = 4, height = 4)
 p16
 dev.off()
+
+general
 ```
 
 ## Euler angles and contacts
@@ -1367,7 +1378,7 @@ p17 <- cont5050 %>%
                     filter(residue.aa.to == "P"),
                   aes(label = str_split_fixed(pdb.id, "_", 2)[,1]),
                   min.segment.length = 0, force = 4, segment.alpha = 0.5, nudge_y = 0.1) +
-  scale_color_brewer(TeX("$\\beta_{50}$ residue"), palette = "Set1") +
+  scale_color_manual(TeX("$\\beta_{50}$ residue"), values = c("grey", "blue")) +
   xlab(TeX("$\\alpha_{Euler}$")) +
   ylab(TeX("$\\gamma_{Euler}$")) +
   theme_bw() +
@@ -1386,7 +1397,7 @@ dev.off()
 ```{r}
 cont10855 <- trab.contacts %>%
   filter(imgt.idx.from == 108,
-         imgt.idx.to == 55) %>%
+         imgt.idx.to == 43) %>%
   merge(praxis.s) %>%
   filter(chain.type.obs == "TRA") %>%
   mutate(residue.aa.from = ifelse(residue.aa.from == "N", "N",
@@ -1399,7 +1410,7 @@ p18 <- cont10855 %>%
                     filter(residue.aa.from %in% c("N", "I")),
                   aes(label = str_split_fixed(pdb.id, "_", 2)[,1]),
                   min.segment.length = 0, force = 4, segment.alpha = 0.5, nudge_y = 0.1)+
-  scale_color_brewer(TeX("$\\alpha_{108}$ residue"), palette = "Set1") +
+  scale_color_manual(TeX("$\\alpha_{108}$ residue"), values = c("orange", "blue", "grey")) +
   xlab(TeX("$\\alpha_{Euler}$")) +
   ylab(TeX("$\\gamma_{Euler}$")) +
   theme_bw() +
@@ -1408,6 +1419,13 @@ p18 <- cont10855 %>%
 
 t.test((cont10855 %>% filter(residue.aa.from == "N") %>% .$gamma) / pi * 180,
        (cont10855 %>% filter(residue.aa.from == "I") %>% .$gamma) / pi * 180)
+
+
+trab.contact.profile.i %>%
+  filter(contact.freq > CONTACT_FREQ_THRESHOLD, I < CONTACT_INF_THRESHOLD) %>%
+  merge(resmarkup.i) %>%
+  merge(praxis.s %>% filter(chain.type.obs == "TRA")) %>%
+  fwrite("contacts_and_angels_for_dima.txt", sep = "\t")
 
 p18
 pdf("fig7b.pdf", width = 4.5, height = 4.5)

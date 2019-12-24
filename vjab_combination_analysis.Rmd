@@ -307,7 +307,7 @@ p3c
 dev.off()
 ```
 
-```{r}
+```
 clones10x <- fread("data_dump/10x_pbmc2_clones.txt") %>%
   filter(chain %in% c("TRA", "TRB")) %>%
   select(barcode, raw_clonotype_id, chain, v_gene, j_gene) %>%

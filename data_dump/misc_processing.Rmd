@@ -1,0 +1,87 @@
+---
+title: "Misc processing"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(dplyr)
+library(data.table)
+library(stringdist)
+library(reshape2)
+library(fpc)
+```
+
+## Processing PairSEQ data
+
+Generating Va-Ja-Vb-Jb-count table
+
+```{r}
+pairseq <- fread("zcat tcr_ab_pairs.txt") %>%
+  select(sample, clone, chain, allVGenes, allJGenes)
+
+pairseq.a <- pairseq %>%
+  filter(chain == "A") %>%
+  mutate(v.alpha = allVGenes, j.alpha = allJGenes) %>%
+  select(-chain, -allVGenes, -allJGenes)
+
+pairseq.b <- pairseq %>%
+  filter(chain == "B") %>%
+  mutate(v.beta = allVGenes, j.beta = allJGenes) %>%
+  select(-chain, -allVGenes, -allJGenes)
+
+pairseq.s <- pairseq.a %>%
+  merge(pairseq.b) %>%
+  group_by(v.alpha, j.alpha, v.beta, j.beta) %>%
+  summarise(count = n()) %>%
+  ungroup %>%
+  # record row id
+  mutate(id = 1:n()) %>%
+  # expand variants
+  separate_rows(v.alpha, sep = ",") %>%
+  separate_rows(j.alpha, sep = ",") %>%
+  separate_rows(v.beta, sep = ",") %>%
+  separate_rows(j.beta, sep = ",") %>%
+  # divide count equally across all variants
+  group_by(id) %>%
+  mutate(count = count / n()) %>%
+  # summarise back
+  group_by(v.alpha, j.alpha, v.beta, j.beta) %>%
+  summarise(count = sum(count)) %>%
+  ungroup
+
+fwrite(pairseq.s, "tcr_ab_pairs.vj.txt", sep = "\t")
+```
+
+```{r}
+fread("tcr_ab_pairs.vj.txt") %>%
+  select(v.alpha, j.alpha, v.beta, j.beta) %>%
+  unique %>%
+  nrow
+
+fread("tcr_ab_pairs.vj.txt") %>%
+  .$count %>%
+  sum
+```
+
+```
+pairseq.c <- fread("tcr_ab_pairs.txt")
+TRIM_FLANK <- 4
+cdr3ds <- pairseq %>%
+  filter(chain == "A", nchar(aaSeqCDR3) > 2 * TRIM_FLANK) %>%
+  select(chain, aaSeqCDR3) %>%
+  unique
+
+cdr3ds$cdr3inner <- with(cdr3ds,
+                         substr(aaSeqCDR3, TRIM_FLANK + 1, nchar(aaSeqCDR3) - TRIM_FLANK))
+
+cdr3inner <- cdr3ds$cdr3inner %>% unique
+
+dist <- stringdistmatrix(cdr3inner, method = "lv", nthread = 40)
+
+res <- dbscan(dist, eps = 1, method = "dist")  
+```
+
+
+

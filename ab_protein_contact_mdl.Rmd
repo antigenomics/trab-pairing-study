@@ -375,6 +375,10 @@ trab.contact.profile.i <- trab.contact.profile %>%
           mutate(I.wt = ifelse(complex.species == "Mouse", NA, I.wt)), all.y = T) %>%
   mutate(contact.freq = ifelse(is.na(contact.freq), 0, contact.freq))
 
+trab.contact.profile.i %>%
+  group_by(complex.species, chain) %>%
+  do(cor.test(.$contact.freq, .$I) %>% tidy)
+
 p2 <- trab.contact.profile.i %>%
   ggplot(aes(x = imgt.idx, y = contact.freq)) +
   geom_bar(stat = "identity", fill = "red", alpha = 0.7) +
@@ -1054,6 +1058,10 @@ vdjdb.vj <- fread("data_dump/vdjdb_full.txt") %>%
 
 vdjdb.vj %>% .$antigen.epitope %>% unique
 
+vdjdb.vj %>%
+  group_by(antigen.epitope) %>%
+  summarize(total = n())
+
 vdjdb.vj %>% nrow
 ```
 
@@ -1277,8 +1285,6 @@ p16
 pdf("fig6.pdf", width = 4, height = 4)
 p16
 dev.off()
-
-general
 ```
 
 ## Euler angles and contacts
@@ -1363,7 +1369,138 @@ praxis.s <- praxis.m2 %>%
          chain.type.proj %in% c("TRA", "TRB"))
 ```
 
+Get non-redundant set of angles
+
 ```{r}
+general.1 <- general %>%
+          group_by(pdb.id) %>%
+          summarize(segment.comb = paste(allele.info[which(chain.type == "TRA")],
+                                         allele.info[which(chain.type == "TRB")]))
+
+praxis.s2 <- praxis.s %>%
+  filter(chain.type.obs == "TRA") %>%
+  select(pdb.id, alpha, beta, gamma) %>%
+  merge(general.1) %>%
+  group_by(segment.comb) %>%
+  summarize(alpha = mean(alpha), beta = mean(beta), gamma = mean(gamma)) %>%
+  merge(general.1)
+```
+
+ class contains 4 amino acids: aliphatic (A, I, L, V),
+1 class contains 3 amino acids: basic (R, H, K),
+4 classes contain 2 amino acids: sulfur (C, M), hydroxyl (S, T), acidic (D,E) and amide (N, Q),
+5 classes contain a single amino acid: G, F, P, W, Y.
+
+```
+imgt.classes <- data.frame(
+  imgt.cls = c('aliphatic', 'aliphatic', 'aliphatic', 'aliphatic', 'aliphatic', 'aliphatic',
+  'basic', 'basic', 'basic',
+  'sulfur', 'sulfur',
+  'hydroxyl', 'hydroxyl',
+  'acidic', 'acidic',
+  'aromatic', 'aromatic', 'aromatic'),
+residue.aa = c('A', 'I', 'L', 'V', 'G', 'P',
+  'R', 'H', 'K',
+  'C', 'M',
+  'S', 'T',
+  'D', 'E',
+  'F', 'W', 'Y'))
+```
+
+```{r}
+imgt.classes <- data.frame(
+  imgt.cls = c('C1', 'C1', 'C1', 'C1', 'C1', 'C1',
+  'C2', 'C2', 'C2', 'C2', 'C2', 'C2',
+  'C3', 'C3',
+  'C4', 'C4', 'C4',
+  'C5', 'C5'),
+residue.aa = c('M', 'L', 'F', 'I', 'V', 'W',
+  'N', 'S', 'Y', 'T', 'H', 'Q',
+  'K', 'R',
+  'G', 'P', 'A',
+  'D', 'E'))
+```
+
+```{r}
+rbind(
+trab.contacts %>%
+  mutate(chain = "TRA", imgt.idx = imgt.idx.from, residue.aa = residue.aa.from) %>%
+  select(real, pdb.id, complex.species, chain, imgt.idx, residue.aa) %>%
+  unique,
+trab.contacts %>%
+  mutate(chain = "TRB", imgt.idx = imgt.idx.to, residue.aa = residue.aa.to) %>%
+  select(real, pdb.id, complex.species, chain, imgt.idx, residue.aa) %>%
+  unique
+) %>% 
+  merge(imgt.classes) -> df.contact.imgt.cls
+```
+
+Select interesting contacts
+
+```{r fig.width=5, fig.height=4}
+praxis.s2 %>% 
+  merge(df.contact.imgt.cls %>% filter(real) %>% select(-real)) %>%
+  select(-pdb.id) %>%
+  unique %>%
+  select(-residue.aa) %>%
+  melt(id.vars = c('segment.comb', 'complex.species', 'chain', 'imgt.cls', 'imgt.idx')) %>%
+  group_by(variable, complex.species, chain, imgt.idx) %>%
+  filter(length(unique(imgt.cls)) > 1) %>%
+  #do(kruskal.test(.$value, .$imgt.cls) %>% tidy) %>%
+  do(aov(value ~ imgt.cls, data = .) %>% tidy) %>%
+  filter(term == "imgt.cls") %>%
+  group_by(variable) %>%
+  mutate(p.value.adj = p.adjust(p.value)) %>%
+  arrange(p.value.adj) -> residue.angle.corr
+#shape = p.value.adj < 0.05
+
+p17x <- residue.angle.corr %>%
+  filter(p.value.adj >= 0.05) %>%
+  ggplot(aes(x = imgt.idx, y = variable)) +
+  geom_point(aes(size = pmin(statistic, 20)), shape = 21) +
+  geom_point(data = residue.angle.corr %>% filter(p.value.adj < 0.05), 
+             aes(size = pmin(statistic, 20)), shape = 21, color = "red") +
+  geom_text_repel(data = residue.angle.corr %>% filter(p.value.adj < 0.05),
+             aes(label = imgt.idx), nudge_y = 0.3, min.segment.length = 0, color = "red") +
+  scale_size_continuous("F-score", breaks = c(1, 5, 10)) +
+  xlab("Position in TCR chain") + scale_y_discrete("", labels = c("Phi1", "Phi2", "Phi3")) +
+  facet_grid(. ~ chain) + 
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+p17x
+pdf("p17x.pdf", width = 5, height = 4)
+p17x
+dev.off()
+```
+
+```{r fig.width=4, fig.height=3}
+cont57 <- df.contact.imgt.cls %>%
+  filter(chain == "TRA", imgt.idx == 57) %>%
+  merge(praxis.s %>% 
+          filter(chain.type.obs == "TRA") %>%
+          select(pdb.id, alpha, beta, gamma) %>%
+          unique)
+
+p17y <- cont57 %>%
+  select(imgt.cls, gamma) %>%
+  unique %>%
+  ggplot(aes(x = imgt.cls, y = gamma / pi * 180, color = imgt.cls)) +
+  geom_quasirandom(varwidth = F, groupOnX = T, width = 0.1) +
+  geom_boxplot(width = 0.2, color = "black", alpha = 0.5, fill = NA, outlier.colour = NA) +
+  scale_color_manual(guide = F, values = c("#E58989", "#F6F600", "#00E300", "#00D9D9", "#DC00DC")) +
+  xlab(TeX("Residue type at $\\alpha_{57}$")) +
+  ylab(TeX("$\\phi_3$")) +
+  theme_minimal() +
+  theme(legend.position = "bottom", aspect = 1)
+  
+p17y
+pdf("p17y.pdf", width = 4, height = 3)
+p17y
+dev.off()
+```
+
+```
 cont5050 <- trab.contacts %>%
   filter(imgt.idx.from == 50,
          imgt.idx.to == 50) %>%
@@ -1394,7 +1531,7 @@ p17
 dev.off()
 ```
 
-```{r}
+```
 cont10855 <- trab.contacts %>%
   filter(imgt.idx.from == 108,
          imgt.idx.to == 43) %>%
@@ -1434,7 +1571,7 @@ dev.off()
 ```
 
 
-```{r}
+```
 library(plot3D)
 praxis.arrow <- praxis %>%
   filter(chain.component == "TCR") %>%
